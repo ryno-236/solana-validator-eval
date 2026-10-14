@@ -163,9 +163,9 @@ Mainnet facts worth knowing, all checked on-chain:
 ## Known limitations
 
 - Takes **vote account** addresses, not identity addresses.
-- Public RPC handled 50 epochs and `getProgramAccounts` in our runs, but rate-limits
-  `getTransaction`. Expect roughly 2.5 min per validator for 50 epochs in `mev_history.py` and
-  `realized_yield.py`. An archival provider (Helius, Triton) helps for wide scans or deeper history.
+- Speed: the public RPC rate-limits `getTransaction`. The same 10-epoch, 2-validator
+  `realized_yield.py` job took 94 s on the public RPC and 21 s on a Helius free key, with identical
+  output. A 50-epoch, 5-validator ranking takes about 2 minutes on Helius.
 - `commission_history.py`'s point-value cross-check is limited to the 64 epochs of `epochCredits`
   kept on-chain.
 - `realized_yield.py`'s APY assumes MEV and block claims are restaked; claims land as undelegated
@@ -174,7 +174,9 @@ Mainnet facts worth knowing, all checked on-chain:
   inflation; `implied_commission_pct` would then go negative (no longer clipped at 0).
 - The point-value check assumes the stake account's undelegated lamports (rent + excess) stayed
   constant over the window; a deposit, split or merge mid-window skews `implied_commission_pct`.
-- RPC endpoint: `--rpc`, else `$SOLANA_RPC_URL`, else the public endpoint.
+- RPC endpoint: `--rpc`, else `$SOLANA_RPC_URL`, else Helius if `HELIUS_API_KEY` is set (in the
+  environment or a `.env` file here, which is git-ignored), else the public endpoint. The key is
+  never printed; errors show the endpoint without its query string.
 
 ## Roadmap
 

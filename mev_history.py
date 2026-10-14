@@ -35,7 +35,7 @@ import struct
 import sys
 import time
 
-from commission_history import DEFAULT_RPC, rpc
+from commission_history import DEFAULT_RPC, rpc, settle_args
 
 TIP_DISTRIBUTION_PROGRAM = "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
 TDA_SEED = b"TIP_DISTRIBUTION_ACCOUNT"
@@ -148,10 +148,11 @@ def main():
     ap.add_argument("accounts", nargs="*", help="vote account addresses")
     ap.add_argument("-f", "--file", help="file with one vote account per line")
     ap.add_argument("--epochs", type=int, default=30, help="completed epochs to look back (default 30)")
-    ap.add_argument("--rpc", default=DEFAULT_RPC, help="RPC endpoint URL (default: $SOLANA_RPC_URL or public mainnet)")
+    ap.add_argument("--rpc", default=DEFAULT_RPC, help="RPC endpoint URL (default: $SOLANA_RPC_URL, else Helius via $HELIUS_API_KEY or .env, else public mainnet)")
     ap.add_argument("--csv", help="optional path to write per-epoch results")
-    ap.add_argument("--sleep", type=float, default=0.3, help="pause between calls (seconds)")
+    ap.add_argument("--sleep", type=float, default=None, help="pause between calls in seconds (default 0.3 on the public endpoint, else 0)")
     args = ap.parse_args()
+    settle_args(args)
 
     votes = [a.partition("=")[0] for a in args.accounts]
     if args.file:

@@ -46,7 +46,7 @@ import sys
 import time
 
 from block_revenue import PFDA_SEED, PRIORITY_FEE_PROGRAM
-from commission_history import DEFAULT_RPC, STAKE_PROGRAM, U64_MAX, rpc
+from commission_history import DEFAULT_RPC, STAKE_PROGRAM, U64_MAX, rpc, settle_args
 from mev_history import TDA_SEED, TIP_DISTRIBUTION_PROGRAM, _on_curve, b58decode, find_pda, live_tdas
 
 SLOTS_PER_EPOCH = 432000  # mainnet: fixed, no warmup
@@ -127,10 +127,11 @@ def main():
     ap.add_argument("accounts", nargs="*", help="VOTE or VOTE=STAKE entries")
     ap.add_argument("-f", "--file", help="file with one VOTE or VOTE=STAKE per line")
     ap.add_argument("--epochs", type=int, default=30, help="completed epochs to look back (default 30)")
-    ap.add_argument("--rpc", default=DEFAULT_RPC, help="RPC endpoint URL (default: $SOLANA_RPC_URL or public mainnet)")
+    ap.add_argument("--rpc", default=DEFAULT_RPC, help="RPC endpoint URL (default: $SOLANA_RPC_URL, else Helius via $HELIUS_API_KEY or .env, else public mainnet)")
     ap.add_argument("--csv", help="optional path to write per-epoch results")
-    ap.add_argument("--sleep", type=float, default=0.3, help="pause between calls (seconds)")
+    ap.add_argument("--sleep", type=float, default=None, help="pause between calls in seconds (default 0.3 on the public endpoint, else 0)")
     args = ap.parse_args()
+    settle_args(args)
 
     entries = list(args.accounts)
     if args.file:

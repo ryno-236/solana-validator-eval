@@ -39,7 +39,8 @@ Usage:
 
 Notes:
 - Pass VOTE account addresses (not identity addresses).
-- RPC endpoint: --rpc, else $SOLANA_RPC_URL, else the public mainnet endpoint.
+- RPC endpoint: --rpc, else $SOLANA_RPC_URL, else Helius if $HELIUS_API_KEY is set
+  (environment or .env), else the public mainnet endpoint.
 - Covers inflation commission only. MEV commission lives in Jito's per-epoch
   tip distribution accounts; block-revenue commission (SIMD-0123) is separate.
 """
@@ -53,7 +54,44 @@ import time
 
 import requests
 
-DEFAULT_RPC = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+PUBLIC_RPC = "https://api.mainnet-beta.solana.com"
+
+
+def load_dotenv(path=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    """Minimal .env reader (KEY=VALUE lines); real environment variables win."""
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            key, sep, value = line.strip().partition("=")
+            if sep and key and not key.startswith("#"):
+                os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+def default_rpc():
+    """$SOLANA_RPC_URL, else Helius if $HELIUS_API_KEY is set (env or .env), else public."""
+    load_dotenv()
+    if os.environ.get("SOLANA_RPC_URL"):
+        return os.environ["SOLANA_RPC_URL"]
+    if os.environ.get("HELIUS_API_KEY"):
+        return f"https://mainnet.helius-rpc.com/?api-key={os.environ['HELIUS_API_KEY']}"
+    return PUBLIC_RPC
+
+
+def redact(url):
+    """Endpoint without its query string, safe to print."""
+    return url.split("?", 1)[0]
+
+
+def settle_args(args):
+    """Fill endpoint-dependent defaults and say which endpoint is in use (key redacted)."""
+    if args.sleep is None:
+        args.sleep = 0.3 if args.rpc == PUBLIC_RPC else 0.0
+    print(f"RPC: {redact(args.rpc)}", file=sys.stderr)
+
+
+DEFAULT_RPC = default_rpc()
+_session = requests.Session()  # reuse connections: one TLS handshake, not one per call
 STAKE_PROGRAM = "Stake11111111111111111111111111111111111111"
 EPOCH_REWARDS_SYSVAR = "SysvarEpochRewards1111111111111111111111111"
 VOTER_OFFSET = 124            # Delegation.voter_pubkey within a stake account
@@ -65,14 +103,15 @@ def rpc(url, method, params=None):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []}
     for attempt in range(6):
         try:
-            resp = requests.post(url, json=payload, timeout=60)
+            resp = _session.post(url, json=payload, timeout=60)
         except (requests.ConnectionError, requests.Timeout):
             time.sleep(2 ** attempt)
             continue
         if resp.status_code == 429:
             time.sleep(2 ** attempt)
             continue
-        resp.raise_for_status()
+        if resp.status_code >= 400:  # not raise_for_status(): its message includes the URL (API key)
+            raise RuntimeError(f"{method}: HTTP {resp.status_code} from {redact(url)}")
         data = resp.json()
         if data.get("error", {}).get("code") == 429:  # public RPC: per-method limit
             time.sleep(2 ** attempt)
@@ -160,10 +199,11 @@ def main():
     ap.add_argument("accounts", nargs="*", help="VOTE or VOTE=STAKE entries")
     ap.add_argument("-f", "--file", help="file with one VOTE or VOTE=STAKE per line")
     ap.add_argument("--epochs", type=int, default=30, help="completed epochs to look back (default 30)")
-    ap.add_argument("--rpc", default=DEFAULT_RPC, help="RPC endpoint URL (default: $SOLANA_RPC_URL or public mainnet)")
+    ap.add_argument("--rpc", default=DEFAULT_RPC, help="RPC endpoint URL (default: $SOLANA_RPC_URL, else Helius via $HELIUS_API_KEY or .env, else public mainnet)")
     ap.add_argument("--csv", help="optional path to write per-epoch results")
-    ap.add_argument("--sleep", type=float, default=0.3, help="pause between calls (seconds)")
+    ap.add_argument("--sleep", type=float, default=None, help="pause between calls in seconds (default 0.3 on the public endpoint, else 0)")
     args = ap.parse_args()
+    settle_args(args)
 
     entries = list(args.accounts)
     if args.file:
