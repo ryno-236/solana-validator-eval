@@ -173,8 +173,10 @@ def main():
             print(f"{v}: no clean wallet-owned stake account found; pin one with {v}=<STAKE>", file=sys.stderr)
             continue
         chosen[v] = picked
-        open_tdas = live_tdas(args.rpc, v)
-        notes[v] = {e for e, t in open_tdas.items() if e in epochs}
+        open_tdas = live_tdas(args.rpc, v, epochs)
+        # Open TDA without a claim = not yet distributed, unless the validator keeps 100%:
+        # then delegators never get a claim and realized MEV is definitively zero.
+        notes[v] = {e for e, t in open_tdas.items() if e in epochs and t["bps"] < 10000}
 
     # Inflation for all chosen stake accounts, one call per epoch.
     infl = {}

@@ -75,7 +75,8 @@ program (`4R3gSG8B…`) with seeds `["TIP_DISTRIBUTION_ACCOUNT", vote, epoch]`. 
 `validator_commission_bps` is set in `initialize_tip_distribution_account`, and the program has no
 instruction to change it afterwards, so the value at initialization is the one that applied.
 
-- TDA still open (about 10 epochs) → read from account state (`account`)
+- TDA still open (about 10 epochs) → read from account state (`account`), fetched by derived
+  address with `getMultipleAccounts`, so no account index is needed
 - TDA closed → decode the initialize instruction from the PDA's transaction history (`init tx`)
 - PDA never used → no TDA that epoch, so no MEV was shared with delegators (`no TDA`)
 
@@ -120,7 +121,9 @@ three sources, measured on a real stake account.
   account's own transactions, matched to an epoch by the Jito distribution PDA that paid them.
 - **Denominator:** the exact delegated stake that epoch, reconstructed as current delegation minus
   inflation credited since. MEV and block claims land as undelegated lamports and don't compound.
-- **Pending claims:** epochs whose MEV claim hasn't happened yet are excluded from averages.
+- **Pending claims:** epochs whose MEV claim hasn't happened yet (TDA still open, no claim) are
+  excluded from averages. Exception: a TDA at 10000 bps never produces a delegator claim, so its
+  MEV is counted as a definitive zero rather than pending.
 - **Annualized by wall-clock time, not epoch count.** Slot time was cut in steps during this window
   (420 → 416 → 366 → 317 → 267 → 218 ms; epochs went from ~50 h to 26.2 h from epoch 1053), and
   per-epoch inflation shrinks with epoch length. APR = Σ per-epoch yield ÷ Σ epoch duration × 1 year,
@@ -152,6 +155,48 @@ Reference validators measured alongside them confirmed the method: G83jy4… (10
 priority fees, +0.543% block APR) 5.237%. A validator with 0% inflation commission that also shared
 priority fees would beat the shortlist; none has been found yet.
 
+### Candidate batches
+
+Each batch was run through all four scripts with pt1 as the reference. Realized APR is total
+(inflation + MEV); no candidate shared block revenue. "Tied" means the MEV gap to pt1 is under about
+2 standard errors across 50 epochs.
+
+**Batch 1 (epochs 1007–1056).** All 0% inflation commission (inflation APR 5.026–5.030%).
+
+| Validator | MEV commission | Realized APR |
+|---|---|---|
+| pt1Lsjk… (ref) | 0 bps | 5.273% |
+| CV7uvPY…, NoRDTy8…, 2g2QU1N…, HeTyhZd…, cover89…, THWfRpc… | 0 bps | 5.213–5.232%, tied with pt1 |
+| FahWJg2… | 0 bps | 5.182%, measurably lower MEV |
+| 49DJjUX… | **500 bps** (300 until epoch 869) | 5.174% |
+| 9rwCwfL… | 0 bps | 5.160%, measurably lower MEV |
+| BeSov1o… | **1000 bps** | 5.139% |
+
+**Batch 2 (epochs 1009–1058).**
+
+| Validator | Inflation commission | MEV commission | Realized APR |
+|---|---|---|---|
+| pt1Lsjk… (ref) | 0% | 0 bps | 5.254% |
+| B6nDYYL… | 0% | 0 bps | 5.196%, tied with pt1 (t = 0.4) |
+| 8GbwASq… | 0% | 0 bps | 5.167% (MEV gap t = 2.8) |
+| bkpkQKg… | 0% | 0 bps | 5.145% (t = 3.4) |
+| he1iusu… | 0% | 0 bps; no TDA in epoch 1025 | 5.110% (t = 4.6) |
+| ANCVpxE… | **5%** | **no TDA in epochs 1009–1046**, 0 bps from 1047 | 4.822% |
+| EXhYxF2… | **6%** | **10000 bps** (keeps all MEV) in every epoch | 4.709% |
+
+Takeaways:
+
+- Among 0% validators inflation APR is identical to within 0.004 pp; the whole spread is MEV. Inflation
+  commission shows up exactly as expected (ANCVpx 0.95 × 5.011 = 4.760%, EXhYxF 0.94 × 5.011 = 4.710%).
+- A dashboard showing only inflation commission would miss EXhYxF's 100% MEV commission and
+  ANCVpx's 38 epochs without any Jito tip sharing.
+- The two largest validators measured (he1ius, 8Gbw) earn measurably less MEV per SOL than pt1 at
+  the same 0 bps; the missed epoch explains only a small part of he1ius's gap.
+- `commission_history.py` showed B6nDYY at 1.32% implied before epoch 1052. That was the owner
+  withdrawing undelegated lamports (it breaks the constant-idle assumption), not commission: the
+  exact-delegation inflation APR in `realized_yield.py` is 5.010%, i.e. 0%. Likewise 9rwC's 101%
+  implied came from a tiny account merged mid-window; a pinned clean account gives 0%.
+
 Mainnet facts worth knowing, all checked on-chain:
 
 - Feature activations: vote state v4 at epoch 949, delayed commission changes at 991,
@@ -177,6 +222,9 @@ Mainnet facts worth knowing, all checked on-chain:
 - RPC endpoint: `--rpc`, else `$SOLANA_RPC_URL`, else Helius if `HELIUS_API_KEY` is set (in the
   environment or a `.env` file here, which is git-ignored), else the public endpoint. The key is
   never printed; errors show the endpoint without its query string.
+- The Helius free tier can refuse `getProgramAccounts` on the Tip Distribution program ("account
+  index service overloaded"). Only `mev_history.py`'s side note on unclosed TDAs from before the
+  window depends on it; it prints "lookup unavailable" instead of failing.
 
 ## Roadmap
 

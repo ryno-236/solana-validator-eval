@@ -103,16 +103,32 @@ def parse_tda(raw):
     return {"epoch": epoch, "bps": bps, "total_tips": total_tips}
 
 
-def live_tdas(url, vote):
-    """{epoch: parsed TDA} for every TDA of `vote` still open on-chain."""
-    accts = rpc(url, "getProgramAccounts", [TIP_DISTRIBUTION_PROGRAM, {
-        "encoding": "base64", "filters": [{"memcmp": {"offset": 8, "bytes": vote}}]}])
+def live_tdas(url, vote, epochs):
+    """{epoch: parsed TDA} for the given epochs whose TDA is still open on-chain.
+    Addresses are derived, so this needs no account index (getProgramAccounts)."""
+    epochs = list(epochs)
+    addrs = [tda_address(vote, e) for e in epochs]
     out = {}
-    for a in accts:
-        t = parse_tda(base64.b64decode(a["account"]["data"][0]))
-        t["address"] = a["pubkey"]
-        out[t["epoch"]] = t
+    for i in range(0, len(addrs), 100):
+        res = rpc(url, "getMultipleAccounts", [addrs[i:i + 100], {"encoding": "base64"}])["value"]
+        for e, addr, a in zip(epochs[i:i + 100], addrs[i:i + 100], res):
+            if a and a["owner"] == TIP_DISTRIBUTION_PROGRAM:
+                t = parse_tda(base64.b64decode(a["data"][0]))
+                t["address"] = addr
+                out[e] = t
     return out
+
+
+def unclosed_before(url, vote, first_epoch):
+    """{epoch: bps} for TDAs left open from before first_epoch: stray snapshots of past
+    commission. Best effort: needs getProgramAccounts, which some providers throttle."""
+    try:
+        accts = rpc(url, "getProgramAccounts", [TIP_DISTRIBUTION_PROGRAM, {
+            "encoding": "base64", "filters": [{"memcmp": {"offset": 8, "bytes": vote}}]}])
+    except RuntimeError:
+        return None
+    found = (parse_tda(base64.b64decode(a["account"]["data"][0])) for a in accts)
+    return {t["epoch"]: t["bps"] for t in found if t["epoch"] < first_epoch}
 
 
 def commission_from_history(url, address, sleep, program=TIP_DISTRIBUTION_PROGRAM, init_disc=INIT_TDA_DISC):
@@ -169,8 +185,8 @@ def main():
     rows = []  # (epoch, vote, tda, bps, total_tips, source)
     older = {}
     for v in votes:
-        live = live_tdas(args.rpc, v)
-        older[v] = {e: t["bps"] for e, t in live.items() if e < epochs[-1]}
+        live = live_tdas(args.rpc, v, epochs)
+        older[v] = unclosed_before(args.rpc, v, epochs[-1])
         for e in epochs:
             if e in live:
                 t = live[e]
@@ -203,7 +219,9 @@ def main():
         print(f"{v:<46} {len(ok):>4} {len(no_tda):>6} {err:>4} {mx_s:>6}  {flag}")
         if no_tda:
             print(f"{'':<46} no TDA in epochs: {', '.join(map(str, no_tda))}")
-        if older[v]:
+        if older[v] is None:
+            print(f"{'':<46} (unclosed TDAs before window: lookup unavailable on this RPC)")
+        elif older[v]:
             print(f"{'':<46} unclosed TDAs before window: "
                   + ", ".join(f"{e}:{b}bps" for e, b in sorted(older[v].items())))
     print("\n'ok' = epochs with a verified MEV commission (live account, or initialize instruction).")
