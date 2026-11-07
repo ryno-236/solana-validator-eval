@@ -226,10 +226,115 @@ Mainnet facts worth knowing, all checked on-chain:
   index service overloaded"). Only `mev_history.py`'s side note on unclosed TDAs from before the
   window depends on it; it prints "lookup unavailable" instead of failing.
 
+## Design notes: monitoring after Alpenglow (Nov 2026, not built)
+
+Notes from a design discussion, saved for later development. Facts were checked on mainnet at
+epoch 1076 and against Agave source at commit `1c5f40a`.
+
+### Why monitor instead of chasing yield
+
+- Among good 0%/0-bps validators the realized APR spread is about 0.05 pp a year, mostly MEV noise
+  (tip sizes are heavy-tailed; the *number* of leader slots barely varies over a year).
+- An unnoticed failure costs far more. A validator dropping out or raising commission to 100% costs
+  about 5% APR while it lasts: one week is about 0.1% of stake, roughly two years of the gap between
+  the best and second-best validator.
+- With native staking the validator can't touch principal (no live slashing), so the worst case is
+  lost yield until you leave. **How fast you notice a problem matters more than which good validator
+  you picked.** The design is alerts first, with a periodic (e.g. quarterly) yield review.
+
+### Alpenglow facts that change the picture
+
+- **Alpenglow is live from epoch 1064** (feature activated at slot 459,648,000). Votes are no
+  longer transactions.
+- **Inflation now depends on leader slots.** The leader earns credits for every vote it includes in
+  its reward certificates, so pt1's per-epoch `total_eff` swings 0.87–1.04 with its leader-slot
+  assignment, and skipped leader slots now cost inflation as well as MEV. The 0.004 pp inflation
+  spread measured under TowerBFT probably doesn't hold anymore. See `alpenglow_check.py`.
+- **Validator Admission Ticket (VAT, SIMD-0357).** At the first block of epoch N the runtime picks
+  the voter set for epoch N+1. A vote account gets in only if it has a BLS key, has stake, is in
+  the top 2,000 by stake, and holds at least rent-exempt minimum (0.0198 SOL) + VAT
+  (+ `pendingDelegatorRewards` once SIMD-0123 is active). Accounts that pass have the VAT burned
+  from the **vote account** (a `VATDebit` reward record in that block). The VAT is 1.6 SOL per
+  epoch at 400 ms slots and **0.8 SOL at today's 200 ms slots**, about 270 SOL a year. A vote
+  account that fails is left out of the whole next epoch: **its delegators earn zero**, and it
+  shows up only as delinquent.
+- **0%/0-bps validators have nothing flowing into their vote account.** Commission is what refills
+  it (MEV commission arrives there through TipRouter), so a 0/0 operator must top it up by hand.
+  Epoch 1076 snapshot: 61 active validators (16.2M SOL) had ≤3 epochs of runway; pt1 had 13
+  and CV7 had 25.
+- **Real cases.** D4Em5FzP… (0%) dropped 0.8 SOL per epoch until it couldn't pay and was left out
+  from epoch 1074; it was later topped up. EXhYxF…, FQwewNX…, J21SMPF… and NDf9Pv6… (about 1.8M SOL
+  delegated) had their vote accounts emptied to one address about an hour before the epoch 1069
+  boundary and have been delinquent since epoch 1070. Their fee payers overlap, so one party
+  controls all four. Whether it was an exit or a stolen key is unknown.
+- **The validator count didn't drop at Alpenglow.** Vote accounts earning credits fell slowly
+  from 688 (epoch 1017) to 658 (epoch 1076), with no cliff at 1064. This counts only vote accounts
+  that still exist, from 64 epochs of `epochCredits`.
+- **SIMD-0123 (block-revenue sharing) is not active.** Its feature account `Crbnc267…` doesn't
+  exist, all 693 vote accounts are at `blockRevenueCommissionBps` 10000, and every
+  `pendingDelegatorRewards` is 0. The fields exist in vote state v4 but do nothing yet.
+
+### What to alert on (one check per epoch)
+
+| Signal | Why | Source |
+|---|---|---|
+| **VAT runway** = (vote balance − rent − pending rewards) ÷ VAT, warn at ≤3 epochs for 0% validators | Most likely way a 0/0 validator stops paying; gives epochs of warning. Alert immediately on a sudden withdrawal that leaves it below the threshold | `getAccountInfo` on the vote account |
+| Delinquent / missing from the voter set | Zero rewards from that epoch on | `getVoteAccounts`, epoch `VATDebit` records |
+| Inflation, MEV and block-revenue commission | Commission increases; scheduled changes may be visible before they apply (delayed commission changes since epoch 991) | Vote state, TDA, PFDA |
+| TDA created this epoch | No TDA means no MEV for delegators | `mev_history.py` |
+| Skip rate and vote efficiency vs. network | Now affects inflation as well as MEV | `alpenglow_check.py` |
+| Own stake account's realized reward vs. the model | Catches anything not anticipated | `getInflationReward`, claims |
+| SIMD-0123 feature account appears | Block commission becomes a third commission to compare on and a new place for quiet increases. Vote state keeps only the current value, so snapshot it every epoch | `getAccountInfo` on `Crbnc267…` |
+
+### Things to evaluate when choosing a validator (filters, not a ranking)
+
+- **Clean commission history** across inflation, MEV and TDA presence (the existing scripts).
+- **A sustainable business.** A 0/0 validator lives on block revenue (priority fees, kept 100%
+  until SIMD-0123) plus self-stake income, against VAT and hardware. Either it is big enough for
+  block fees to cover costs, or it's a loss leader for a parent business (e.g. he1ius → Helius).
+  The risky profile is small, 0/0, with no visible parent business and little self-stake.
+- **Stake composition**: self / SFDP / stake pools / organic, by classifying each delegated stake
+  account's withdrawer. Self-stake is only a lower bound, since an operator can use unlinked
+  wallets. SFDP membership is a mild quality signal, not a red flag. Depending on it is the
+  risk, and commission caps go away when a validator leaves the program. The test: if SFDP and
+  pool stake left, would it still cover its costs?
+- **Operator quality**: skip rate and MEV per produced block. Decompose MEV per SOL as
+  leader slots per SOL (luck) × (1 − skip rate) × tips per produced block × (1 − commission).
+  he1ius (t = 4.6) and 8Gbw (t = 2.8) trailed pt1 at the same 0 bps, which suggests a real
+  operator gap, not luck.
+- **Screen out sandwiching** validators (public trackers; check how reliable they are). It's
+  ethically bad, and it gets validators removed from SFDP and pools.
+- **Network-health tiebreakers**: outside the superminority, not in crowded data centers, client
+  diversity.
+- **Spread across two validators** so one failure costs half while the alert reaches you.
+
+### Benchmarks for the periodic review
+
+- **Your own stake account** (exact; no proxy account needed).
+- **The peer set fixed at decision time** (an honest regret test), plus a rolling set of current
+  best candidates.
+- **LSTs** (JitoSOL, mSOL, …) via pool exchange rate: the alternative you could actually buy,
+  after pool fees. A possible tax difference vs. native staking is worth asking a professional about.
+- *Optional:* the network's stake-weighted average from a cheap model (credits × point value,
+  TDA balances), checked against realized numbers for the peers.
+- Switch only on an alert or a gap that holds at about 2 standard errors and exceeds the cost
+  of switching (about one epoch of rewards).
+
+### Architecture sketch
+
+A daily collector (after the epoch boundary) that refactors the scripts into functions returning
+rows; stores per-epoch × validator rows in SQLite, allowing updates because MEV claims arrive late;
+diffs against the previous epoch for alerts (push notifications); and produces a static
+dashboard from the store. Suggested order: store → own account and peers → alerts (VAT
+runway first) → LST benchmark → dashboard → network model.
+
 ## Roadmap
 
 - [x] Validate `commission_history.py` against live data
 - [x] MEV commission history (Jito per-epoch tip distribution accounts)
 - [x] Block-reward commission (SIMD-0123)
 - [x] Realized delegator yield per SOL staked, ranked across a shortlist
-- [ ] Ongoing monitor that flags commission changes or vote-credit slippage
+- [x] Alpenglow inflation check (`alpenglow_check.py`)
+- [ ] Ongoing monitor (see design notes above): VAT runway, delinquency, commission changes,
+      TDA presence, skip rate, SIMD-0123 activation
+- [ ] Stake composition and skip-rate / MEV-per-block metrics
